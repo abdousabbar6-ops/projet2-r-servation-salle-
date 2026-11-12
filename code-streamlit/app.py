@@ -28,20 +28,62 @@ def chevauchement_existe(conn, salle_id, date, debut, fin, reservation_id=None):
     params = [salle_id, date, debut, fin]
     query = """
         SELECT COUNT(*) as cnt FROM reservations 
-        WHERE salle_id = ? AND date = ? AND id != ?
+        WHERE salle_id = ? AND date = ?
         AND (
             (debut <= ? AND fin > ?) OR
             (debut < ? AND fin > ?)
         )
     """
     if reservation_id:
-        query = query.replace("AND id != ?", "AND id != ?")
+        query = query.replace("WHERE salle_id = ? AND date = ?", "WHERE salle_id = ? AND date = ? AND id != ?")
         params.insert(2, reservation_id)
-    else:
-        query = query.replace("AND id != ?", "")
     
     count = conn.execute(query, params).fetchone()[0]
     return count > 0
+
+
+def chevauchement_personne_existe(conn, personne, date, debut, fin, reservation_id=None):
+    """Vérifie s'il y a un chevauchement avec d'autres réservations de la même personne."""
+    params = [personne, date, debut, fin]
+    query = """
+        SELECT COUNT(*) as cnt FROM reservations 
+        WHERE personne = ? AND date = ?
+        AND (
+            (debut <= ? AND fin > ?) OR
+            (debut < ? AND fin > ?)
+        )
+    """
+    if reservation_id:
+        query = query.replace("WHERE personne = ? AND date = ?", "WHERE personne = ? AND date = ? AND id != ?")
+        params.insert(2, reservation_id)
+    
+    count = conn.execute(query, params).fetchone()[0]
+    return count > 0
+
+
+def generer_reservations_repetees(conn, salle_id, personne, date_debut, heure_debut, heure_fin, participants, date_fin_repetition):
+    """Génère les réservations répétées hebdomadairement."""
+    from datetime import datetime, timedelta
+    
+    date_courante = datetime.strptime(date_debut, "%Y-%m-%d")
+    date_fin = datetime.strptime(date_fin_repetition, "%Y-%m-%d")
+    
+    reservations = []
+    while date_courante <= date_fin:
+        date_str = date_courante.strftime("%Y-%m-%d")
+        reservations.append({
+            'salle_id': salle_id,
+            'personne': personne,
+            'date': date_str,
+            'debut': heure_debut,
+            'fin': heure_fin,
+            'participants': participants,
+            'repetition': 1,
+            'date_fin_repetition': date_fin_repetition
+        })
+        date_courante += timedelta(days=7)
+    
+    return reservations
 
 
 # --- Configuration de la page ---
@@ -62,29 +104,31 @@ if "reservation_a_annuler" not in st.session_state:
 st.header("🏢 Gestion des salles")
 
 with ouvrir_base() as conn:
-    salles = conn.execute("SELECT id, nom, capacite, projecteur FROM salles").fetchall()
+    salles = conn.execute("SELECT id, nom, capacite, projecteur, type FROM salles").fetchall()
 
 # --- Afficher la liste des salles ---
 st.subheader("Liste des salles")
 if salles:
-    cols = st.columns([3, 1, 1, 1, 1])
+    cols = st.columns([3, 1, 1, 2, 1, 1])
     cols[0].write("**Nom**")
     cols[1].write("**Capacité**")
     cols[2].write("**Projecteur**")
-    cols[3].write("**Modifier**")
-    cols[4].write("**Supprimer**")
+    cols[3].write("**Type**")
+    cols[4].write("**Modifier**")
+    cols[5].write("**Supprimer**")
     
     for salle in salles:
-        cols = st.columns([3, 1, 1, 1, 1])
+        cols = st.columns([3, 1, 1, 2, 1, 1])
         cols[0].write(f"{salle['nom']}")
         cols[1].write(f"{salle['capacite']}")
         cols[2].write("✅" if salle['projecteur'] else "❌")
+        cols[3].write(f"{salle['type']}")
         
-        if cols[3].button("✏️", key=f"mod_{salle['id']}"):
+        if cols[4].button("✏️", key=f"mod_{salle['id']}"):
             st.session_state.salle_a_modifier = salle['id']
             st.rerun()
         
-        if cols[4].button("🗑️", key=f"sup_{salle['id']}"):
+        if cols[5].button("🗑️", key=f"sup_{salle['id']}"):
             conn.execute("DELETE FROM salles WHERE id = ?", [salle['id']])
             st.success(f"Salle {salle['nom']} supprimée !")
             st.rerun()
@@ -98,6 +142,7 @@ with st.form("ajouter_salle"):
     nom_nouvelle = st.text_input("Nom de la salle", key="nom_ajout")
     capacite_nouvelle = st.number_input("Capacité", min_value=1, value=10, key="capacite_ajout")
     projecteur_nouveau = st.checkbox("Avec projecteur", value=False, key="projecteur_ajout")
+    type_nouveau = st.selectbox("Type de local", ["Salle de cours", "Amphithéâtre", "Salle de réunion", "Laboratoire", "Salle informatique"], key="type_ajout")
     
     if st.form_submit_button("Ajouter"):
         if not nom_nouvelle:
@@ -105,8 +150,8 @@ with st.form("ajouter_salle"):
         else:
             with ouvrir_base() as conn:
                 conn.execute(
-                    "INSERT INTO salles (nom, capacite, projecteur) VALUES (?, ?, ?)",
-                    [nom_nouvelle, capacite_nouvelle, 1 if projecteur_nouveau else 0]
+                    "INSERT INTO salles (nom, capacite, projecteur, type) VALUES (?, ?, ?, ?)",
+                    [nom_nouvelle, capacite_nouvelle, 1 if projecteur_nouveau else 0, type_nouveau]
                 )
             st.success(f"Salle {nom_nouvelle} ajoutée !")
             st.rerun()
@@ -124,6 +169,7 @@ if st.session_state.salle_a_modifier:
         nouveau_nom = st.text_input("Nouveau nom", value=salle['nom'], key="nom_modif")
         nouvelle_capacite = st.number_input("Nouvelle capacité", value=salle['capacite'], min_value=1, key="capacite_modif")
         nouveau_projecteur = st.checkbox("Avec projecteur", value=bool(salle['projecteur']), key="projecteur_modif")
+        nouveau_type = st.selectbox("Type de local", ["Salle de cours", "Amphithéâtre", "Salle de réunion", "Laboratoire", "Salle informatique"], index=["Salle de cours", "Amphithéâtre", "Salle de réunion", "Laboratoire", "Salle informatique"].index(salle['type']) if salle['type'] in ["Salle de cours", "Amphithéâtre", "Salle de réunion", "Laboratoire", "Salle informatique"] else 0, key="type_modif")
         
         if st.form_submit_button("Enregistrer"):
             if not nouveau_nom:
@@ -140,8 +186,8 @@ if st.session_state.salle_a_modifier:
                         st.error(f"La capacité doit être >= {max_participants} (participants des réservations existantes) !")
                     else:
                         conn.execute(
-                            "UPDATE salles SET nom = ?, capacite = ?, projecteur = ? WHERE id = ?",
-                            [nouveau_nom, nouvelle_capacite, 1 if nouveau_projecteur else 0, salle['id']]
+                            "UPDATE salles SET nom = ?, capacite = ?, projecteur = ?, type = ? WHERE id = ?",
+                            [nouveau_nom, nouvelle_capacite, 1 if nouveau_projecteur else 0, nouveau_type, salle['id']]
                         )
                         st.success(f"Salle {salle['nom']} modifiée !")
                         st.session_state.salle_a_modifier = None
@@ -167,10 +213,11 @@ with st.form("reserver_salle"):
         
         # Informations de la salle
         with ouvrir_base() as conn:
-            salle_info = conn.execute("SELECT capacite FROM salles WHERE id = ?", [salle_id]).fetchone()
+            salle_info = conn.execute("SELECT capacite, type FROM salles WHERE id = ?", [salle_id]).fetchone()
             capacite_salle = salle_info['capacite']
+            type_salle = salle_info['type']
         
-        st.write(f"Capacité maximale: {capacite_salle} personnes")
+        st.write(f"Capacité maximale: {capacite_salle} personnes | Type: {type_salle}")
         
         # Personne
         personne = st.text_input("Nom de la personne", key="personne_reservation")
@@ -188,6 +235,13 @@ with st.form("reserver_salle"):
         # Participants
         participants = st.number_input("Nombre de participants", min_value=1, value=1, key="participants_reservation")
         
+        # Répétition hebdomadaire (B3)
+        st.markdown("---")
+        repetition_active = st.checkbox("Répétition hebdomadaire", value=False, key="repetition_active")
+        date_fin_repetition = None
+        if repetition_active:
+            date_fin_repetition = st.date_input("Date de fin de répétition", key="date_fin_repetition", min_value=date_reservation)
+        
         if st.form_submit_button("Réserver"):
             if not personne:
                 st.error("Le nom de la personne est obligatoire !")
@@ -204,17 +258,55 @@ with st.form("reserver_salle"):
                 elif not duree_valide(debut_str, fin_str):
                     st.error("La durée doit être entre 30 minutes et 4 heures !")
                 else:
-                    # Vérifier les chevauchements
+                    # Vérifier les chevauchements avec la salle (B1 existant)
                     with ouvrir_base() as conn:
                         if chevauchement_existe(conn, salle_id, date_str, debut_str, fin_str):
                             st.error("Il y a déjà une réservation qui chevauche cet horaire pour cette salle !")
+                        # Vérifier les chevauchements avec la personne (B1 nouveau)
+                        elif chevauchement_personne_existe(conn, personne, date_str, debut_str, fin_str):
+                            st.error(f"{personne} a déjà une réservation qui chevauche cet horaire !")
                         else:
-                            conn.execute(
-                                "INSERT INTO reservations (salle_id, personne, date, debut, fin, participants) VALUES (?, ?, ?, ?, ?, ?)",
-                                [salle_id, personne, date_str, debut_str, fin_str, participants]
-                            )
-                            st.success(f"Réservation confirmée pour {personne} dans {salle_selectionnee} le {date_str} de {debut_str} à {fin_str} !")
-                            st.rerun()
+                            if repetition_active and date_fin_repetition:
+                                # Générer toutes les réservations répétées (B3)
+                                date_fin_str = date_fin_repetition.strftime("%Y-%m-%d")
+                                reservations_a_creer = generer_reservations_repetees(
+                                    conn, salle_id, personne, date_str, debut_str, fin_str, participants, date_fin_str
+                                )
+                                
+                                # Vérifier les chevauchements pour toutes les dates générées
+                                chevauchement_trouve = False
+                                for res in reservations_a_creer:
+                                    if chevauchement_existe(conn, res['salle_id'], res['date'], res['debut'], res['fin']):
+                                        st.error(f"Il y a déjà une réservation qui chevauche pour la salle {salle_selectionnee} le {res['date']} !")
+                                        chevauchement_trouve = True
+                                        break
+                                    if chevauchement_personne_existe(conn, res['personne'], res['date'], res['debut'], res['fin']):
+                                        st.error(f"{personne} a déjà une réservation qui chevauche le {res['date']} !")
+                                        chevauchement_trouve = True
+                                        break
+                                
+                                if not chevauchement_trouve:
+                                    # Insérer toutes les réservations
+                                    for res in reservations_a_creer:
+                                        conn.execute(
+                                            """INSERT INTO reservations 
+                                            (salle_id, personne, date, debut, fin, participants, repetition, date_fin_repetition) 
+                                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                                            [res['salle_id'], res['personne'], res['date'], res['debut'], res['fin'], 
+                                             res['participants'], res['repetition'], res['date_fin_repetition']]
+                                        )
+                                    st.success(f"Réservations répétées confirmées pour {personne} dans {salle_selectionnee} de {date_str} à {date_fin_str} !")
+                                    st.rerun()
+                            else:
+                                # Réservation unique
+                                conn.execute(
+                                    """INSERT INTO reservations 
+                                    (salle_id, personne, date, debut, fin, participants, repetition, date_fin_repetition) 
+                                    VALUES (?, ?, ?, ?, ?, ?, 0, NULL)""",
+                                    [salle_id, personne, date_str, debut_str, fin_str, participants]
+                                )
+                                st.success(f"Réservation confirmée pour {personne} dans {salle_selectionnee} le {date_str} de {debut_str} à {fin_str} !")
+                                st.rerun()
     else:
         st.warning("Ajoutez d'abord une salle pour pouvoir réserver.")
 
@@ -226,7 +318,7 @@ st.header("🗑️ Annuler une réservation")
 
 with ouvrir_base() as conn:
     reservations = conn.execute(
-        """SELECT r.id, r.salle_id, s.nom as salle_nom, r.personne, r.date, r.debut, r.fin, r.participants
+        """SELECT r.id, r.salle_id, s.nom as salle_nom, r.personne, r.date, r.debut, r.fin, r.participants, r.repetition, r.date_fin_repetition
            FROM reservations r
            JOIN salles s ON r.salle_id = s.id
            ORDER BY r.date, r.debut"""
@@ -236,17 +328,30 @@ if reservations:
     st.subheader("Liste des réservations")
     
     for res in reservations:
-        cols = st.columns([2, 2, 1, 1, 1, 1])
+        cols = st.columns([2, 2, 1, 1, 1, 1, 1])
         cols[0].write(f"{res['salle_nom']}")
         cols[1].write(f"{res['personne']}")
         cols[2].write(f"{res['date']}")
         cols[3].write(f"{res['debut']}-{res['fin']}")
         cols[4].write(f"{res['participants']} pers.")
+        cols[5].write("⟳" if res['repetition'] else "")
         
-        if cols[5].button("Annuler", key=f"ann_{res['id']}"):
-            with ouvrir_base() as conn:
-                conn.execute("DELETE FROM reservations WHERE id = ?", [res['id']])
-            st.success(f"Réservation annulée : {res['salle_nom']} - {res['personne']} le {res['date']} de {res['debut']} à {res['fin']}")
+        if cols[6].button("Annuler", key=f"ann_{res['id']}"):
+            # Si c'est une réservation répétée, supprimer toutes les réservations de la série
+            if res['repetition'] and res['date_fin_repetition']:
+                with ouvrir_base() as conn:
+                    conn.execute(
+                        """DELETE FROM reservations 
+                        WHERE personne = ? AND date >= ? AND date <= ? 
+                        AND debut = ? AND fin = ? AND salle_id = ? AND repetition = 1""",
+                        [res['personne'], res['date'], res['date_fin_repetition'], 
+                         res['debut'], res['fin'], res['salle_id']]
+                    )
+                st.success(f"Série de réservations annulée : {res['salle_nom']} - {res['personne']} de {res['date']} à {res['date_fin_repetition']}")
+            else:
+                with ouvrir_base() as conn:
+                    conn.execute("DELETE FROM reservations WHERE id = ?", [res['id']])
+                st.success(f"Réservation annulée : {res['salle_nom']} - {res['personne']} le {res['date']} de {res['debut']} à {res['fin']}")
             st.rerun()
 else:
     st.info("Aucune réservation à annuler.")
@@ -269,7 +374,7 @@ if salles:
     # Récupérer les réservations pour cette salle sur la semaine
     with ouvrir_base() as conn:
         reservations_semaine = conn.execute(
-            """SELECT id, date, debut, fin, personne, participants
+            """SELECT id, date, debut, fin, personne, participants, repetition
                FROM reservations 
                WHERE salle_id = ? AND date >= ? AND date <= ?
                ORDER BY date, debut""",
@@ -290,7 +395,8 @@ if salles:
         
         if res_jour:
             for res in res_jour:
-                st.write(f"- **{res['debut']}-{res['fin']}** : {res['personne']} ({res['participants']} personnes)")
+                rep_indicator = " (⟳)" if res['repetition'] else ""
+                st.write(f"- **{res['debut']}-{res['fin']}** : {res['personne']} ({res['participants']} personnes){rep_indicator}")
         else:
             st.write("Aucune réservation.")
         st.markdown("---")

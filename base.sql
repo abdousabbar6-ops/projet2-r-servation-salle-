@@ -3,7 +3,8 @@ CREATE TABLE IF NOT EXISTS salles (
     id INTEGER PRIMARY KEY,
     nom TEXT NOT NULL,
     capacite INTEGER NOT NULL,
-    projecteur INTEGER NOT NULL DEFAULT 0
+    projecteur INTEGER NOT NULL DEFAULT 0,
+    type TEXT NOT NULL DEFAULT 'Salle de cours'
 );
 CREATE TABLE IF NOT EXISTS reservations (
     id INTEGER PRIMARY KEY,
@@ -12,7 +13,9 @@ CREATE TABLE IF NOT EXISTS reservations (
     date TEXT NOT NULL,
     debut TEXT NOT NULL,
     fin TEXT NOT NULL,
-    participants INTEGER NOT NULL
+    participants INTEGER NOT NULL,
+    repetition INTEGER NOT NULL DEFAULT 0,
+    date_fin_repetition TEXT
 );
 
 -- Données d'exemple, chargées à la création de data.db. Le 9 novembre 2026 est un lundi.
